@@ -1,20 +1,21 @@
 import React from "react";
 import "./style.css";
+import { debounce } from "lodash";
 
 type FunctionComponent = (props: { [key: string]: any }) => SpiceElement;
 
-type SpiceElement =
-  | {
-      type: string | FunctionComponent;
-      props: { [key: string]: any } & { children: SpiceElement[] };
-    }
-  | string
-  | number;
+type SpiceElement = {
+  type: string | FunctionComponent;
+  props: { [key: string]: any } & { children: (SpiceElement | unknown)[] };
+};
+
+const isSpiceElement = (x: unknown): x is SpiceElement =>
+  typeof x === "object" && "type" in x && "props" in x;
 
 const createElement = (
-  type: string,
+  type: string | FunctionComponent,
   props: { [key: string]: any },
-  ...children: SpiceElement[]
+  ...children: (SpiceElement | unknown)[]
 ): SpiceElement => {
   return {
     type,
@@ -25,96 +26,79 @@ const createElement = (
   };
 };
 
-type UseStateHook = {
-  currentValue: any;
-};
-
 // hook state
-const hooksByKey: { [key: string]: UseStateHook[] } = {};
-let currentComponentKey: null | string = null;
+const hooks: any[] = [];
 let currentHookIndex: number = 0;
 
 // render state
-let shouldRender: boolean = true;
-let renderRoot: HTMLElement | null = null;
 let elementRoot: SpiceElement | null = null;
+let renderRoot: HTMLElement | null = null;
 
-const render = (element: SpiceElement, container: HTMLElement) => {
+const render = debounce((element: SpiceElement, container: HTMLElement) => {
+  container.replaceChildren();
+  // set up state
+  currentHookIndex = 0;
   elementRoot = element;
   renderRoot = container;
-};
+
+  // do the render
+  renderInner(element, container);
+});
 
 const renderInner = (element: SpiceElement, container: HTMLElement) => {
-  if (typeof element !== "object") {
-    // text node
-    const textNode = document.createTextNode(element.toString());
-    container.appendChild(textNode);
+  if (typeof element.type === "function") {
+    // run function component and render results
+    const outputElem = element.type(element.props);
+    renderInner(outputElem, container);
   } else {
-    if (typeof element.type === "function") {
-      // before running our function component, reset state for the new component
-      currentComponentKey = element.props.key;
-      currentHookIndex = 0;
+    // make our new element
+    const domElem = document.createElement(element.type);
 
-      // run function component and render results
-      const outputElem = element.type(element.props);
-      renderInner(outputElem, container);
-    } else {
-      // make our new element
-      const domElem = document.createElement(element.type);
+    // add props
+    Object.entries(element.props).map(([key, value]) => {
+      if (key === "children") {
+        // do nothing lol
+      } else if (key === "onClick") {
+        domElem.addEventListener("click", element.props[key]);
+      } else if (key === "style") {
+        // TODO: assign each key of style to the elem
+      } else {
+        domElem[key] = value;
+      }
+    });
 
-      // add props
-      Object.entries(element.props).map(([key, value]) => {
-        if (key !== "children") {
-          domElem[key.toLowerCase()] = value;
-        }
-      });
+    // add children
+    element.props.children.forEach((child) => {
+      if (isSpiceElement(child)) {
+        renderInner(child, domElem);
+      } else {
+        const textNode = document.createTextNode(String(child));
+        domElem.appendChild(textNode);
+      }
+    });
 
-      // add children
-      element.props.children.forEach((child) => renderInner(child, domElem));
-
-      // append it to the container
-      container.appendChild(domElem);
-    }
+    // append it to the container
+    container.appendChild(domElem);
   }
 };
-
-const workLoop = () => {
-  if (shouldRender && elementRoot && renderRoot) {
-    while (renderRoot.firstChild) {
-      renderRoot.removeChild(renderRoot.firstChild);
-    }
-    renderInner(elementRoot, renderRoot);
-    shouldRender = false;
-  }
-
-  window.requestIdleCallback(workLoop);
-};
-
-window.requestIdleCallback(workLoop);
 
 function useState<T>(initialValue: T): [T, (newValue: T) => void] {
-  // initialize the entry for this component if necessary
-  if (!(currentComponentKey in hooksByKey)) {
-    hooksByKey[currentComponentKey] = [];
-  }
+  const index = currentHookIndex++;
 
   // initialize entry for this hook if necessary
-  if (!hooksByKey[currentComponentKey][currentHookIndex]) {
-    hooksByKey[currentComponentKey].push({ currentValue: initialValue });
+  if (!hooks[index]) {
+    hooks.push(initialValue);
   }
 
   const setState = (newValue) => {
     // update the value of the hook
-    hooksByKey[currentComponentKey][currentHookIndex].currentValue = newValue;
+    hooks[index] = newValue;
 
     // trigger a rerender
-    shouldRender = true;
+    render(elementRoot, renderRoot);
   };
 
-  return [
-    hooksByKey[currentComponentKey][currentHookIndex].currentValue,
-    setState,
-  ];
+  return [hooks[index], setState];
 }
 
 const Spice = {
@@ -125,12 +109,19 @@ const Spice = {
 
 /** @jsx Spice.createElement */
 
-const RedText = ({ text }: { text: string }) => {
+const Counter = ({ text }: { text: string }) => {
   const [counter, setCounter] = useState(0);
+  const [str, setStr] = useState("hi");
 
   return (
-    <div className="red" onClick={() => setCounter(counter + 1)}>
-      {text}: {counter}
+    <div
+      className="red"
+      onClick={() => {
+        setCounter(counter + 1);
+        setStr(str + str);
+      }}
+    >
+      {text}: {counter} : {str}
     </div>
   );
 };
@@ -139,7 +130,9 @@ const App = () => {
   return (
     <div>
       <h1 className="red">Hello from spice!</h1>
-      <RedText key="cool-component-1" text="Good to have you here" />
+      <Counter text="Good to have you here" />
+      <Counter text="Good to have you here" />
+      <Counter text="Good to have you here" />
     </div>
   );
 };
